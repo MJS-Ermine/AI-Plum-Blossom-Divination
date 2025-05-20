@@ -30,8 +30,6 @@ Original file is located at
 **可自行下載資料檔**
 """
 
-!wget -O yijing_data.jsonl "https://drive.google.com/file/d/1wXqcyUDpkgk9ycdJFwV9bOMki9NEutyI/view?usp=sharing"
-
 """**載入必要套件**"""
 
 !pip install gradio
@@ -47,11 +45,20 @@ import numpy as np
 import requests
 import gradio as gr
 from sentence_transformers import SentenceTransformer
+import os
+import logging
 
 """**初始化模型與資料**"""
 
-GROQ_API_KEY = "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"
-data_path = "/content/yijing_training_data_3000.jsonl"
+# 設定 logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+# 讀取 API 金鑰
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise RuntimeError("請設定 GROQ_API_KEY 環境變數，避免金鑰洩漏！")
+
+data_path = "yijing_training_data_3000.jsonl"
 
 """**載入 JSONL 資料**"""
 
@@ -89,63 +96,87 @@ def random_hexagram():
 """**查詢語料庫**"""
 
 def retrieve_context(query, top_k=3):
-    query_embedding = embed_model.encode([query], convert_to_numpy=True)
-    D, I = index.search(query_embedding, top_k)
-    return "\n\n".join([sample_data[i]["completion"] for i in I[0]])
+    try:
+        query_embedding = embed_model.encode([query], convert_to_numpy=True)
+        D, I = index.search(query_embedding, top_k)
+        return "\n\n".join([sample_data[i]["completion"] for i in I[0]])
+    except Exception as e:
+        logging.error(f"RAG 檢索失敗: {e}")
+        return ""
 
 """**呼叫 Groq**"""
 
 def ask_llm(query, context):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": "llama3-8b-8192",
-        "messages": [
-            {
-                "role": "system",
-                "content": "你全程只會使用中文回答，且你是一位擅長解釋易經卦象的智慧顧問，根據卦象與使用者問題，給出有深度的建議。"
-            },
-            {
-                "role": "user",
-                "content": f"背景資料如下：\n{context}\n\n使用者提問：{query}"
-            }
-        ],
-        "temperature": 0.7,
-        "max_tokens": 512
-    }
-
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                             headers=headers, json=payload)
     try:
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama3-8b-8192",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你全程只會使用中文回答，且你是一位擅長解釋易經卦象的智慧顧問，根據卦象與使用者問題，給出有深度的建議。"
+                },
+                {
+                    "role": "user",
+                    "content": f"背景資料如下：\n{context}\n\n使用者提問：{query}"
+                }
+            ],
+            "temperature": 0.7,
+            "max_tokens": 512
+        }
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                                 headers=headers, json=payload)
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"⚠️ 發生錯誤：{response.text}"
+        logging.error(f"Groq API 呼叫失敗: {e}")
+        return f"⚠️ 發生錯誤：{str(e)}"
 
 """**主邏輯**"""
 
-def fortune_teller(user_question):
-    yaos, yao_desc = random_hexagram()
-    moving_lines = [i+1 for i, y in enumerate(yaos) if y in [6, 9]]
-    yao_text = f"動爻：{', '.join(map(str, moving_lines)) if moving_lines else '無'}\n六爻狀態：{', '.join(yao_desc)}"
+def hexagram_to_unicode(yaos: list[int]) -> str:
+    """將六爻數值轉換為Unicode卦象圖。"""
+    # 6/8: 陰爻（⚋），7/9: 陽爻（⚊）
+    yao_symbols = {6: '⚋', 7: '⚊', 8: '⚋', 9: '⚊'}
+    lines = [yao_symbols.get(y, '?') for y in reversed(yaos)]  # 上爻在上
+    return '\n'.join(lines)
 
-    # 組合 Prompt（模擬使用者原本手動提供卦象）
-    pseudo_prompt = f"問題：{user_question}\n卦象：隨機卦象，{yao_text}。\n"
-
-    # 做 RAG
-    context = retrieve_context(pseudo_prompt)
-    answer = ask_llm(pseudo_prompt, context)
-
-    return f"🔮 您的問題：{user_question}\n\n🧧 您抽到的卦象描述：\n{yao_text}\n\n💡 解卦建議：\n{answer}"
+def fortune_teller(user_question, mode, manual_yaos, manual_moving):
+    try:
+        if mode == "隨機起卦":
+            yaos, yao_desc = random_hexagram()
+        else:
+            yaos = [int(x) for x in manual_yaos.split(',')]
+            yao_desc = [yao_map[y] for y in yaos]
+        moving_lines = [i+1 for i, y in enumerate(yaos) if y in [6, 9]]
+        yao_text = f"動爻：{', '.join(map(str, moving_lines)) if moving_lines else '無'}\n六爻狀態：{', '.join(yao_desc)}"
+        hexagram_img = hexagram_to_unicode(yaos)
+        pseudo_prompt = f"問題：{user_question}\n卦象：{'手動輸入' if mode=='手動輸入' else '隨機卦象'}，{yao_text}。\n"
+        context = retrieve_context(pseudo_prompt)
+        answer = ask_llm(pseudo_prompt, context)
+        return f"🔮 您的問題：{user_question}\n\n🧧 卦象圖：\n{hexagram_img}\n\n卦象描述：\n{yao_text}\n\n💡 解卦建議：\n{answer}"
+    except Exception as e:
+        logging.error(f"fortune_teller 執行失敗: {e}")
+        return f"⚠️ 發生錯誤：{str(e)}"
 
 """**Gradio UI**"""
 
-gr.Interface(
-    fn=fortune_teller,
-    inputs=gr.Textbox(lines=2, label="請輸入您的問題", placeholder="例如：我最近適合換工作嗎？"),
-    outputs=gr.Textbox(label="卦象解釋結果"),
-    title="隨機卦象問答系統 🔮",
-    description="輸入你的問題，AI算命師會自動幫你起卦並解析卦象。"
-).launch(share=True)
+with gr.Blocks() as demo:
+    gr.Markdown("# 梅花問卦．智能解易\nAI Plum Blossom Divination")
+    mode = gr.Radio(["隨機起卦", "手動輸入"], label="起卦方式", value="隨機起卦")
+    user_question = gr.Textbox(lines=2, label="請輸入您的問題", placeholder="例如：我最近適合換工作嗎？")
+    manual_yaos = gr.Textbox(label="手動輸入六爻（以逗號分隔，如7,8,9,6,7,8）", visible=False)
+    manual_moving = gr.Textbox(label="動爻（可留空，自動判斷）", visible=False)
+    output = gr.Textbox(label="卦象解釋結果")
+
+    def update_visibility(selected):
+        return {manual_yaos: gr.update(visible=(selected=="手動輸入")),
+                manual_moving: gr.update(visible=False)}
+
+    mode.change(update_visibility, inputs=mode, outputs=[manual_yaos, manual_moving])
+    btn = gr.Button("解卦")
+    btn.click(fortune_teller, inputs=[user_question, mode, manual_yaos, manual_moving], outputs=output)
+
+demo.launch(share=True)
