@@ -31,12 +31,7 @@ Original file is located at
 """
 
 """**載入必要套件**"""
-
-!pip install gradio
-
-!pip install faiss-cpu
-!pip install sentence-transformers
-!pip install openai
+# 已移除 pip install 相關行，請於命令列安裝依賴
 
 import random
 import json
@@ -54,7 +49,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # 讀取 API 金鑰
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("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")
 if not GROQ_API_KEY:
     raise RuntimeError("請設定 GROQ_API_KEY 環境變數，避免金鑰洩漏！")
 
